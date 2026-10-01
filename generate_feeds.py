@@ -189,6 +189,20 @@ def old_ids(path):
         return None
 
 
+def has_fulltext(path):
+    """判断现有 XML 是否已是全文版 (首篇 description 含全文标记)。"""
+    if not path.exists():
+        return False
+    try:
+        items = ET.parse(path).getroot().find("channel").findall("item")
+        if not items:
+            return False
+        d = items[0].findtext("description") or ""
+        return "阅读原文" in d
+    except Exception:
+        return False
+
+
 def main():
     base = Path(__file__).parent
     changed = []
@@ -197,10 +211,11 @@ def main():
         articles = fetch_articles(suid)
         print(f"{fname}: 抓到 {len(articles)} 篇", flush=True)
         new_ids = [str(a.get("id")) for a in articles]
-        if new_ids == old_ids(out):
+        # ID 没变且已有全文 -> 跳过; ID 没变但还是摘要版 -> 重写为全文
+        if new_ids == old_ids(out) and has_fulltext(out):
             print(f"{fname}: 无新文章, 跳过", flush=True)
             continue
-        print(f"{fname}: 有新文章, 抓取全文...", flush=True)
+        print(f"{fname}: 生成全文 RSS...", flush=True)
         out.write_text(build_rss(suid, articles), encoding="utf-8")
         print(f"{fname}: 已写入", flush=True)
         changed.append(fname)
