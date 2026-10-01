@@ -1,0 +1,123 @@
+name: 更新邸钞 RSS
+
+on:
+  schedule:
+    - cron: "7 * * * *"   # 每小时第 7 分钟自动跑
+  workflow_dispatch:       # 也允许在网页上手动点按钮立即跑一次
+
+permissions:
+  contents: write          # 允许 workflow 把新 XML 推回仓库
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 抓取腾讯接口并生成 RSS
+        run: |
+          python3 - <<'PYEOF'
+          import json, urllib.request
+          from datetime import datetime, timezone, timedelta
+          from email.utils import format_datetime
+          from pathlib import Path
+          from xml.sax.saxutils import escape
+          import xml.etree.ElementTree as ET
+
+          API_URL = "https://i.news.qq.com/getSubNewsMixedList?guestSuid=8QIf3nxc64AYuDfe4wc=&tabId=om_index"
+          AUTHOR_PAGE = "https://news.qq.com/omn/author/8QIf3nxc64AYuDfe4wc="
+          UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+          BEIJING = timezone(timedelta(hours=8))
+          OUT = Path("dichao.xml")
+
+          req = urllib.request.Request(API_URL, headers={"User-Agent": UA})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              data = json.loads(r.read().decode("utf-8"))
+          assert data.get("ret") == 0, f"API 异常: {data}"
+          articles = data.get("newslist") or []
+          print(f"抓到 {len(articles)} 篇")
+
+          # 只比较文章 id 列表: 一致就说明没有新文章, 不重写文件
+          new_ids = [str(a.get("id")) for a in articles]
+          old_ids = []
+          if OUT.exists():
+              try:
+                  items = ET.parse(OUT).getroot().find("channel").findall("item")
+                  old_ids = [i.findtext("guid") for i in items]
+              except Exception as e:
+                  print(f"旧文件解析失败, 将重写: {e}")
+          if new_ids == old_ids:
+              print("无新文章, 跳过")
+              raise SystemExit(0)
+
+          def rfc822(ts):
+              return format_datetime(datetime.fromtimestamp(ts, tz=BEIJING))
+
+          card = (articles[0].get("card") or {}) if articles else {}
+          author_name = card.get("chlname") or "邸钞"
+          author_desc = card.get("desc") or "分享有价值的文章,拓宽眼界视野。"
+          icon = card.get("icon") or ""
+
+          items = []
+          for a in articles:
+              title = a.get("title") or a.get("longtitle") or ""
+              link = a.get("url") or a.get("surl") or ""
+              guid = a.get("id") or link
+              abstract = a.get("abstract") or ""
+              ts = a.get("timestamp") or 0
+              pub_date = rfc822(ts) if ts else ""
+              thumbs = a.get("thumbnails_qqnews") or a.get("thumbnails") or []
+              desc_html = ""
+              if thumbs:
+                  desc_html += f'<p><img src="{escape(thumbs[0], {"\"" : "&quot;"})}" /></p>'
+              if abstract:
+                  desc_html += f"<p>{escape(abstract)}</p>"
+              items.append(
+                  "    <item>\n"
+                  f"      <title>{escape(title)}</title>\n"
+                  f"      <link>{escape(link)}</link>\n"
+                  f'      <guid isPermaLink="false">{escape(str(guid))}</guid>\n'
+                  + (f"      <pubDate>{pub_date}</pubDate>\n" if pub_date else "")
+                  + (f"      <description><![CDATA[{desc_html}]]></description>\n" if desc_html else "")
+                  + f"      <author>{escape(author_name)}</author>\n"
+                  "    </item>"
+              )
+
+          now = format_datetime(datetime.now(tz=BEIJING))
+          channel_image = ""
+          if icon:
+              channel_image = (
+                  "    <image>\n"
+                  f"      <url>{escape(icon)}</url>\n"
+                  f"      <title>{escape(author_name)}</title>\n"
+                  f"      <link>{escape(AUTHOR_PAGE)}</link>\n"
+                  "    </image>\n"
+              )
+          rss = (
+              '<?xml version="1.0" encoding="UTF-8"?>\n'
+              '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n'
+              "  <channel>\n"
+              f"    <title>{escape(author_name)} - 腾讯新闻</title>\n"
+              f"    <link>{escape(AUTHOR_PAGE)}</link>\n"
+              f"    <description>{escape(author_desc)}</description>\n"
+              "    <language>zh-cn</language>\n"
+              f"    <lastBuildDate>{now}</lastBuildDate>\n"
+              f'    <atom:link href="{escape(AUTHOR_PAGE)}" rel="self" type="application/rss+xml" />\n'
+              "    <generator>qq-author-rss (i.news.qq.com)</generator>\n"
+              "    <ttl>60</ttl>\n"
+              + channel_image
+              + "\n".join(items)
+              + "\n  </channel>\n</rss>\n"
+          )
+          OUT.write_text(rss, encoding="utf-8")
+          print(f"有新文章, 已写入 {OUT} ({len(rss)} 字符)")
+          PYEOF
+
+      - name: 有变化才提交推送
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dichao.xml
+          git diff --cached --quiet && echo "无文件变化, 不提交" || git commit -m "更新 RSS"
+          git push
