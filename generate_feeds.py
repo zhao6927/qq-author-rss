@@ -381,23 +381,43 @@ def old_ids(path):
 
 
 def indent_paragraphs(html):
-    """给所有 <p> 段落加首行缩进两个汉字 (text-indent:2em)。"""
+    """每段开头加两个全角空格, 实现首行缩进。
+
+    不用 CSS text-indent: 经实测 Unread 会忽略行内样式,
+    全角空格是纯文本, 任何阅读器都认。
+    """
+    # 先保护 pre 代码块, 避免往代码示例里加空格
+    pres = []
+
+    def stash(m):
+        pres.append(m.group(0))
+        return f"\ue000PRE{len(pres) - 1}\ue000"
+
+    html = re.sub(r"<pre\b[^>]*>.*?</pre>", stash, html,
+                  flags=re.S | re.I)
+
     def repl(m):
-        attrs = m.group(1) or ""
-        if "text-indent" in attrs:
+        open_tag, inner, close_tag = m.group(1), m.group(2), m.group(3)
+        # 居中/右对齐的段落不缩进
+        if re.search(r"text-align\s*:\s*(center|right)", open_tag, re.I):
             return m.group(0)
-        sm = re.search(r'style="([^"]*)"', attrs)
-        if sm:
-            new_style = sm.group(1).rstrip(";") + ";text-indent:2em;"
-            new_attrs = (attrs[:sm.start()] + 'style="' + new_style + '"'
-                         + attrs[sm.end():])
-            return "<p" + new_attrs + ">"
-        return '<p' + attrs + ' style="text-indent:2em;">'
-    return re.sub(r"<p(\s[^>]*)?>", repl, html)
+        # 纯图片/空段落不处理
+        if not re.sub(r"<[^>]+>", "", inner).strip():
+            return m.group(0)
+        # 开头已有全角空格的不重复加 (只 strip ASCII 空白, 别动全角空格)
+        if inner.lstrip(" \t\n\r\f\v").startswith("　　"):
+            return m.group(0)
+        return open_tag + "　　" + inner + close_tag
+
+    html = re.sub(r"(<p\b[^>]*>)(.*?)(</p>)", repl, html, flags=re.S)
+
+    for i, block in enumerate(pres):
+        html = html.replace(f"\ue000PRE{i}\ue000", block)
+    return html
 
 
 def has_indent(path):
-    """判断现有 XML 是否已带段落缩进 (首篇 description 含 text-indent)。"""
+    """判断现有 XML 是否已带段落缩进 (段落开头有全角空格)。"""
     if not path.exists():
         return False
     try:
@@ -405,7 +425,7 @@ def has_indent(path):
         if not items:
             return False
         d = items[0].findtext("description") or ""
-        return "text-indent" in d
+        return bool(re.search(r"<p\b[^>]*>　　", d))
     except Exception:
         return False
 
