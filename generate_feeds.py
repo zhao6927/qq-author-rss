@@ -265,6 +265,8 @@ def build_sspai_rss(channel, items):
         else:
             # 官方摘要已是转义后的 HTML, 解开后直接用
             desc = html_unescape(a.get("excerpt") or "")
+        # 每段首行缩进两格
+        desc = indent_paragraphs(desc)
         rss_items.append(
             "    <item>\n"
             f"      <title>{escape(a['title'])}</title>\n"
@@ -325,6 +327,8 @@ def build_rss(suid, articles):
                 desc_html += f'<p><img src="{escape(thumbs[0], {"\"" : "&quot;"})}" /></p>'
             if abstract:
                 desc_html += f"<p>{escape(abstract)}</p>"
+        # 每段首行缩进两格
+        desc_html = indent_paragraphs(desc_html)
 
         items.append(
             "    <item>\n"
@@ -376,6 +380,36 @@ def old_ids(path):
         return None
 
 
+def indent_paragraphs(html):
+    """给所有 <p> 段落加首行缩进两个汉字 (text-indent:2em)。"""
+    def repl(m):
+        attrs = m.group(1) or ""
+        if "text-indent" in attrs:
+            return m.group(0)
+        sm = re.search(r'style="([^"]*)"', attrs)
+        if sm:
+            new_style = sm.group(1).rstrip(";") + ";text-indent:2em;"
+            new_attrs = (attrs[:sm.start()] + 'style="' + new_style + '"'
+                         + attrs[sm.end():])
+            return "<p" + new_attrs + ">"
+        return '<p' + attrs + ' style="text-indent:2em;">'
+    return re.sub(r"<p(\s[^>]*)?>", repl, html)
+
+
+def has_indent(path):
+    """判断现有 XML 是否已带段落缩进 (首篇 description 含 text-indent)。"""
+    if not path.exists():
+        return False
+    try:
+        items = ET.parse(path).getroot().find("channel").findall("item")
+        if not items:
+            return False
+        d = items[0].findtext("description") or ""
+        return "text-indent" in d
+    except Exception:
+        return False
+
+
 def has_fulltext(path):
     """判断现有 XML 是否已是全文版 (首篇 description 含全文标记)。"""
     if not path.exists():
@@ -398,8 +432,8 @@ def main():
         articles = fetch_articles(suid)
         print(f"{fname}: 抓到 {len(articles)} 篇", flush=True)
         new_ids = [str(a.get("id")) for a in articles]
-        # ID 没变且已有全文 -> 跳过; ID 没变但还是摘要版 -> 重写为全文
-        if new_ids == old_ids(out) and has_fulltext(out):
+        # ID 没变、已有全文且已带缩进 -> 跳过; 否则重写
+        if new_ids == old_ids(out) and has_fulltext(out) and has_indent(out):
             print(f"{fname}: 无新文章, 跳过", flush=True)
             continue
         print(f"{fname}: 生成全文 RSS...", flush=True)
@@ -417,7 +451,7 @@ def main():
         sspai_items = []
     if sspai_items:
         new_ids = [a["guid"] for a in sspai_items]
-        if new_ids == old_ids(out) and has_fulltext(out):
+        if new_ids == old_ids(out) and has_fulltext(out) and has_indent(out):
             print(f"{SSPAI_FILE}: 无新文章, 跳过", flush=True)
         else:
             print(f"{SSPAI_FILE}: 生成全文 RSS...", flush=True)
