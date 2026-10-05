@@ -1,8 +1,6 @@
 name: 更新 RSS
 
 on:
-  schedule:
-    - cron: "7 * * * *"   # 每小时第 7 分钟自动跑
   workflow_dispatch:       # 也允许在网页上手动点按钮立即跑一次
 
 permissions:
